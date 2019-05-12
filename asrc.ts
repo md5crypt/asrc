@@ -3,76 +3,87 @@ import * as path from "path"
 import { murmurHash64x64 } from "murmurhash-native"
 import "ag-psd/initialize-canvas"
 import * as AgPsd from "ag-psd"
-import * as ResourceTypes from "./ResourceTypes"
+import { ResourceFile, ResourceFrame, ResourceGroup, ResourceImage } from "./ResourceFile"
 import { Canvas } from "canvas"
 
 const HITMAP_COMPRESSION = 4
 
 class ResourceCompiler {
-	private locations: ResourceTypes.LocationResource[]
-	private images: Map<string, ResourceTypes.ImageResource>
+	private groups: ResourceGroup[]
+	private images: Map<string, ResourceImage>
 	private imageDir: string
 
 	constructor(imageDir: string) {
 		this.imageDir = imageDir
-		this.locations = []
+		this.groups = []
 		this.images = new Map()
 	}
 
-	public readObject(layers: AgPsd.Layer[], name: string): ResourceTypes.ObjectResource {
-		const frames: ResourceTypes.FrameResource[] = []
-		for (const layer of layers) {
-			if (!layer.name || !layer.canvas || layer.name[0] != '@') {
-				console.log(`skipping layer ${layer.name}`)
-				continue
-			}
-			frames.push({
-				name: layer.name.slice(1) || 'default',
-				left: layer.left || 0,
-				top: layer.top || 0,
-				image: this.registerImage(layer.canvas, true)
-			})
-		}
-		return {name, frames}
-	}
-
-	public readLocationPsd(file: string) {
-		const psd = AgPsd.readPsd(fs.readFileSync(file), {  skipCompositeImageData: true, skipThumbnail: true })
-		if (!psd.children) {
-			throw new Error('empty psd file?')
-		}
-		const name = path.parse(file).name
-		const layers = psd.children
-		const objects: ResourceTypes.ObjectResource[] = []
-		const frames: ResourceTypes.FrameResource[] = []
+	public readGroup(layers: AgPsd.Layer[], name: string): ResourceGroup {
+		const frames: ResourceFrame[] = []
+		const children: ResourceGroup[] = []
 		for (const layer of layers) {
 			if (layer.children) {
-				objects.push(this.readObject(layer.children, layer.name!))
-			} else if (layer.name![0] == '@') {
+				children.push(this.readGroup(layer.children, layer.name || 'default'))
+			} else {
+				const nameInfo = (layer.name || 'default').split(':')
 				frames.push({
-					name: layer.name!.slice(1) || 'default',
+					name: nameInfo[0],
 					left: layer.left || 0,
 					top: layer.top || 0,
-					image: this.registerImage(layer.canvas!, false)
+					image: (
+						nameInfo[1] == 'placeholder' ?
+						this.registerPlaceholer(layer.canvas!) :
+						this.registerImage(layer.canvas!, true)
+					)
 				})
 			}
 		}
-		this.locations.push({path: name, frames, objects})
+		const group: ResourceGroup = {name, frames}
+		if (children.length) {
+			group.children = children
+		}
+		return group
+	}
+
+	public readPsd(file: string) {
+		const psd = AgPsd.readPsd(fs.readFileSync(file), { skipCompositeImageData: true, skipThumbnail: true })
+		if (!psd.children) {
+			throw new Error('empty psd file?')
+		}
+		for (const layer of psd.children) {
+			if (layer.children) {
+				this.groups.push(this.readGroup(layer.children, layer.name!))
+			} else {
+				throw new Error(`non group layer in psd root ('${layer.name}')`)
+			}
+		}
 	}
 
 	public save(output: string) {
-		const o: ResourceTypes.Resources = {
-			locations: this.locations,
+		const o: ResourceFile = {
+			groups: this.groups,
 			images: Array.from(this.images.values())
 		}
 		fs.writeFileSync(output, JSON.stringify(o))
 	}
 
-	private registerImage(canvas: HTMLCanvasElement, hitmap: boolean) {
+	private registerPlaceholer(canvas: HTMLCanvasElement): string {
+		const hash = murmurHash64x64(`${canvas.width}x${canvas.height}`)
+		this.images.set(hash, {
+			hash,
+			width: canvas.width,
+			height: canvas.height,
+			placeholder: true
+		})
+		return hash
+	}
+
+	private registerImage(canvas: HTMLCanvasElement, hitmap: boolean): string {
 		const image = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height)
 		const hash = murmurHash64x64(Buffer.from(image.data.buffer))
 		if (!this.images.has(hash)) {
-			const resource: ResourceTypes.ImageResource = {
+			const resource: ResourceImage = {
 				hash,
 				width: image.width,
 				height: image.height
@@ -129,5 +140,5 @@ class ResourceCompiler {
 }
 
 const rc = new ResourceCompiler('images')
-rc.readLocationPsd('village.psd')
+fs.readdirSync('.').filter(x => /[.]psd$/.test(x)).forEach(x => (console.log(x), rc.readPsd(x)))
 rc.save('resource.json')
