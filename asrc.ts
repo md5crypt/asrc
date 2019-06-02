@@ -3,7 +3,7 @@ import * as path from "path"
 import { murmurHash64x64 } from "murmurhash-native"
 import "ag-psd/initialize-canvas"
 import * as AgPsd from "ag-psd"
-import { ResourceFile, ResourceFrame, ResourceGroup, ResourceImage } from "./ResourceFile"
+import { ResourceFile, ResourceFrame, ResourceGroup, ResourceImage, ResourceImageType } from "./ResourceFile"
 import { Canvas } from "canvas"
 
 const HITMAP_COMPRESSION = 4
@@ -27,15 +27,25 @@ class ResourceCompiler {
 				children.push(this.readGroup(layer.children, layer.name || 'default'))
 			} else {
 				const nameInfo = (layer.name || 'default').split(':')
+				let image: string
+				switch (nameInfo[1] || 'frame') {
+					case 'frame':
+						image = this.registerImage(layer.canvas!, true)
+						break
+					case 'proxy':
+						image = this.registerProxy(layer.canvas!)
+						break
+					case 'text':
+						image = this.registerText(layer.canvas!)
+						break
+					default:
+						throw new Error(`unknown layer type '${nameInfo[1]}' in layer '${nameInfo[0]}'`)
+				}
 				frames.push({
 					name: nameInfo[0],
 					left: layer.left || 0,
 					top: layer.top || 0,
-					image: (
-						nameInfo[1] == 'placeholder' ?
-						this.registerPlaceholer(layer.canvas!) :
-						this.registerImage(layer.canvas!, true)
-					)
+					image
 				})
 			}
 		}
@@ -68,13 +78,25 @@ class ResourceCompiler {
 		fs.writeFileSync(output, JSON.stringify(o))
 	}
 
-	private registerPlaceholer(canvas: HTMLCanvasElement): string {
-		const hash = murmurHash64x64(`${canvas.width}x${canvas.height}`)
+	private registerText(canvas: HTMLCanvasElement): string {
+		const hash = murmurHash64x64(`text_${canvas.width}x${canvas.height}`)
 		this.images.set(hash, {
 			hash,
 			width: canvas.width,
 			height: canvas.height,
-			placeholder: true
+			type: ResourceImageType.TEXT
+		})
+		return hash
+	}
+
+
+	private registerProxy(canvas: HTMLCanvasElement): string {
+		const hash = murmurHash64x64(`proxy_${canvas.width}x${canvas.height}`)
+		this.images.set(hash, {
+			hash,
+			width: canvas.width,
+			height: canvas.height,
+			type: ResourceImageType.PROXY
 		})
 		return hash
 	}
@@ -86,7 +108,8 @@ class ResourceCompiler {
 			const resource: ResourceImage = {
 				hash,
 				width: image.width,
-				height: image.height
+				height: image.height,
+				type: ResourceImageType.FRAME
 			}
 			if (hitmap) {
 				const hitmapArray = ResourceCompiler.buildHitmap(image.data, image.width, image.height, HITMAP_COMPRESSION)

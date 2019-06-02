@@ -20,6 +20,12 @@ export interface ResourceImage {
 	width: number
 	height: number
 	hash: string
+	type: ResourceImageType
 	hitmap?: string
-	placeholder?: boolean
+}
+
+export const enum ResourceImageType {
+	FRAME,
+	PROXY,
+	TEXT
 }
