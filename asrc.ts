@@ -43,8 +43,8 @@ class ResourceCompiler {
 				}
 				frames.push({
 					name: nameInfo[0],
-					left: layer.left || 0,
-					top: layer.top || 0,
+					left: layer.left! + layer.canvas!.width / 2,
+					top: layer.top! + layer.canvas!.height / 2,
 					image
 				})
 			}
