@@ -3,7 +3,7 @@ import * as path from "path"
 import { murmurHash64x64 } from "murmurhash-native"
 import "ag-psd/initialize-canvas"
 import * as AgPsd from "ag-psd"
-import { ResourceFile, ResourceFrame, ResourceGroup, ResourceImage, ResourceImageType } from "./ResourceFile"
+import { ResourceFile, ResourceGroup, ResourceImage, ResourceImageType, ResourceAnimation } from "./ResourceFile"
 import { Canvas } from "canvas"
 
 const HITMAP_COMPRESSION = 4
@@ -12,48 +12,100 @@ class ResourceCompiler {
 	private groups: ResourceGroup[]
 	private images: Map<string, ResourceImage>
 	private imageDir: string
-
 	constructor(imageDir: string) {
 		this.imageDir = imageDir
 		this.groups = []
 		this.images = new Map()
 	}
 
-	public readGroup(layers: AgPsd.Layer[], name: string): ResourceGroup {
-		const frames: ResourceFrame[] = []
-		const children: ResourceGroup[] = []
-		for (const layer of layers) {
-			if (layer.children) {
-				children.push(this.readGroup(layer.children, layer.name || 'default'))
-			} else {
-				const nameInfo = (layer.name || 'default').split(':')
-				let image: string
-				switch (nameInfo[1] || 'frame') {
-					case 'frame':
-						image = this.registerImage(layer.canvas!, true)
-						break
-					case 'proxy':
-						image = this.registerProxy(layer.canvas!)
-						break
-					case 'text':
-						image = this.registerText(layer.canvas!)
-						break
-					default:
-						throw new Error(`unknown layer type '${nameInfo[1]}' in layer '${nameInfo[0]}'`)
-				}
-				frames.push({
-					name: nameInfo[0],
-					left: layer.left! + layer.canvas!.width / 2,
-					top: layer.top! + layer.canvas!.height / 2,
-					image
-				})
+	public readLayer(layer: AgPsd.Layer, group: ResourceGroup, originStack: {left: number, top: number}[], nameStack: string[] = []) {
+		const nameInfo = (layer.name || 'default').split(':')
+		const name = nameInfo[0] || 'default'
+		const fullname = nameStack.length ? (nameStack.join('.') + '.' + name) : name
+		if (layer.canvas) {
+			const base = {
+				name: fullname,
+				left: layer.left! + layer.canvas.width / 2 - originStack[originStack.length - 1].left,
+				top: layer.top! + layer.canvas.height / 2 - originStack[originStack.length - 1].top
+			}
+			switch (nameInfo[1]) {
+				case 'origin':
+					originStack.push({top: layer.top!, left: layer.left!})
+					break
+				case 'proxy':
+					group.sprites.push({
+						...base,
+						type: ResourceImageType.PROXY,
+						image: this.registerProxy(layer.canvas)
+					})
+					break
+				case 'text':
+					group.sprites.push({
+						...base,
+						type: ResourceImageType.TEXT,
+						image: this.registerProxy(layer.canvas)
+					})
+					break
+				case undefined:
+					if (!layer.children) {
+						group.sprites.push({
+							...base,
+							type: ResourceImageType.FRAME,
+							image: this.registerImage(layer.canvas, true)
+						})
+					}
+					break
+				default:
+					throw new Error(`unknown layer type '${nameInfo[1]}' in layer '${nameInfo[0]}'`)
+			}
+		} else {
+			switch (nameInfo[1]) {
+				case 'namespace':
+					if (layer.children && layer.children.length) {
+						const sp = originStack.length
+						nameStack.push(name)
+						layer.children.forEach(x => this.readLayer(x, group, originStack, nameStack))
+						nameStack.pop()
+						originStack.slice(sp)
+					}
+					break
+				case 'animation':
+					const animation: ResourceAnimation = {
+						frames: [],
+						name: fullname,
+						type: ResourceImageType.ANIMATION,
+					}
+					for (const frame of layer.children!) {
+						if (!frame.canvas) {
+							throw new Error("invalid animation frame")
+						}
+						animation.frames.push({
+							left: frame.left! + frame.canvas.width / 2 + originStack[originStack.length - 1].left,
+							top: frame.top! + frame.canvas.height / 2 + originStack[originStack.length - 1].top,
+							delay: parseInt(frame.name!.split(':')[1], 10),
+							image: this.registerImage(frame.canvas, true)
+						})
+					}
+					group.sprites.push(animation)
+					break
+				case undefined: {
+					const sp = originStack.length
+					const newGroup = {
+						name: fullname,
+						sprites: [],
+						children: []
+					}
+					layer.children!.forEach(x => this.readLayer(x, newGroup, originStack))
+					if (newGroup.children.length == 0) {
+						delete newGroup.children
+					}
+					group.children!.push(newGroup)
+					originStack.slice(sp)
+					break
+				} default:
+					throw new Error(`unknown layer type '${nameInfo[1]}' in layer '${nameInfo[0]}'`)
 			}
 		}
-		const group: ResourceGroup = {name, frames}
-		if (children.length) {
-			group.children = children
-		}
-		return group
 	}
 
 	public readPsd(file: string) {
@@ -61,12 +113,15 @@ class ResourceCompiler {
 		if (!psd.children) {
 			throw new Error('empty psd file?')
 		}
-		for (const layer of psd.children) {
-			if (layer.children) {
-				this.groups.push(this.readGroup(layer.children, layer.name!))
-			} else {
-				throw new Error(`non group layer in psd root ('${layer.name}')`)
-			}
+		const group = {
+			name: 'root',
+			sprites: [],
+			children: this.groups
+		}
+		const originStack = [{left: 0, top: 0}]
+		psd.children.forEach(x => this.readLayer(x, group, originStack))
+		if (group.sprites.length) {
+			throw new Error("unexpected sprite")
 		}
 	}
 
@@ -78,25 +133,12 @@ class ResourceCompiler {
 		fs.writeFileSync(output, JSON.stringify(o))
 	}
 
-	private registerText(canvas: HTMLCanvasElement): string {
-		const hash = murmurHash64x64(`text_${canvas.width}x${canvas.height}`)
-		this.images.set(hash, {
-			hash,
-			width: canvas.width,
-			height: canvas.height,
-			type: ResourceImageType.TEXT
-		})
-		return hash
-	}
-
-
 	private registerProxy(canvas: HTMLCanvasElement): string {
-		const hash = murmurHash64x64(`proxy_${canvas.width}x${canvas.height}`)
+		const hash = `@${canvas.width},${canvas.height}`
 		this.images.set(hash, {
 			hash,
 			width: canvas.width,
 			height: canvas.height,
-			type: ResourceImageType.PROXY
 		})
 		return hash
 	}
@@ -109,7 +151,6 @@ class ResourceCompiler {
 				hash,
 				width: image.width,
 				height: image.height,
-				type: ResourceImageType.FRAME
 			}
 			if (hitmap) {
 				const hitmapArray = ResourceCompiler.buildHitmap(image.data, image.width, image.height, HITMAP_COMPRESSION)

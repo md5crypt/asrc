@@ -5,12 +5,29 @@ export interface ResourceFile {
 
 export interface ResourceGroup {
 	name: string
-	frames: ResourceFrame[]
+	sprites: ResourceSprite[]
 	children?: ResourceGroup[]
 }
 
-export interface ResourceFrame {
+export type ResourceSprite = ResourceFrame | ResourceAnimation
+
+interface ResourceSpriteBase {
+	type: ResourceImageType
 	name: string
+}
+
+export interface ResourceAnimationFrame {
+	image: string
+	top: number
+	left: number
+	delay: number
+}
+
+export interface ResourceAnimation extends ResourceSpriteBase {
+	frames: ResourceAnimationFrame[]
+}
+
+export interface ResourceFrame extends ResourceSpriteBase {
 	image: string
 	top: number
 	left: number
@@ -20,12 +37,12 @@ export interface ResourceImage {
 	width: number
 	height: number
 	hash: string
-	type: ResourceImageType
 	hitmap?: string
 }
 
 export const enum ResourceImageType {
 	FRAME,
 	PROXY,
-	TEXT
+	TEXT,
+	ANIMATION
 }
