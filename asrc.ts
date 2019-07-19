@@ -80,8 +80,8 @@ class ResourceCompiler {
 							throw new Error("invalid animation frame")
 						}
 						animation.frames.push({
-							left: frame.left! + frame.canvas.width / 2 + originStack[originStack.length - 1].left,
-							top: frame.top! + frame.canvas.height / 2 + originStack[originStack.length - 1].top,
+							left: frame.left! + frame.canvas.width / 2 - originStack[originStack.length - 1].left,
+							top: frame.top! + frame.canvas.height / 2 - originStack[originStack.length - 1].top,
 							delay: parseInt(frame.name!.split(':')[1], 10),
 							image: this.registerImage(frame.canvas, true)
 						})
@@ -100,7 +100,7 @@ class ResourceCompiler {
 						delete newGroup.children
 					}
 					group.children!.push(newGroup)
-					originStack.slice(sp)
+					originStack.splice(sp)
 					break
 				} default:
 					throw new Error(`unknown layer type '${nameInfo[1]}' in layer '${nameInfo[0]}'`)
