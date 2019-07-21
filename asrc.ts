@@ -3,14 +3,17 @@ import * as path from "path"
 import { murmurHash64x64 } from "murmurhash-native"
 import "ag-psd/initialize-canvas"
 import * as AgPsd from "ag-psd"
-import { ResourceFile, ResourceGroup, ResourceImage, ResourceImageType, ResourceAnimation } from "./ResourceFile"
+import * as rcf from "./ResourceFile"
 import { Canvas } from "canvas"
 
-const HITMAP_COMPRESSION = 4
+const enum CONSTANTS {
+	HITMAP_COMPRESSION = 4,
+	WALKMAP_SCALE = 8,
+}
 
 class ResourceCompiler {
-	private groups: ResourceGroup[]
-	private images: Map<string, ResourceImage>
+	private groups: rcf.ResourceGroup[]
+	private images: Map<string, rcf.ResourceImage>
 	private imageDir: string
 	constructor(imageDir: string) {
 		this.imageDir = imageDir
@@ -18,7 +21,7 @@ class ResourceCompiler {
 		this.images = new Map()
 	}
 
-	public readLayer(layer: AgPsd.Layer, group: ResourceGroup, originStack: {left: number, top: number}[], nameStack: string[] = []) {
+	public readLayer(layer: AgPsd.Layer, group: rcf.ResourceGroup, originStack: {left: number, top: number}[], nameStack: string[] = []) {
 		const nameInfo = (layer.name || 'default').split(':')
 		const name = nameInfo[0] || 'default'
 		const fullname = nameStack.length ? (nameStack.join('.') + '.' + name) : name
@@ -32,25 +35,38 @@ class ResourceCompiler {
 				case 'origin':
 					originStack.push({top: layer.top!, left: layer.left!})
 					break
-				case 'proxy':
+				case 'walkmap': {
+					const image = layer.canvas.getContext('2d')!.getImageData(0, 0, layer.canvas.width, layer.canvas.height)
+					const walkmap = ResourceCompiler.buildWalkmap(image.data, image.width, image.height, CONSTANTS.WALKMAP_SCALE)
 					group.sprites.push({
 						...base,
-						type: ResourceImageType.PROXY,
-						image: this.registerProxy(layer.canvas)
+						type: rcf.ResourceImageType.WALKMAP,
+						width: layer.canvas.width,
+						height: layer.canvas.height,
+						data: Buffer.from(walkmap.buffer).toString("base64").replace(/=/g, ''),
+						scale: CONSTANTS.WALKMAP_SCALE
+					})
+					break
+				} case 'proxy':
+				case 'point':
+					group.sprites.push({
+						...base,
+						type: nameInfo[1] == "proxy" ? rcf.ResourceImageType.PROXY : rcf.ResourceImageType.POINT
 					})
 					break
 				case 'text':
 					group.sprites.push({
 						...base,
-						type: ResourceImageType.TEXT,
-						image: this.registerProxy(layer.canvas)
+						type: rcf.ResourceImageType.TEXT,
+						width: layer.canvas.width,
+						height: layer.canvas.height
 					})
 					break
 				case undefined:
 					if (!layer.children) {
 						group.sprites.push({
 							...base,
-							type: ResourceImageType.FRAME,
+							type: rcf.ResourceImageType.FRAME,
 							image: this.registerImage(layer.canvas, true)
 						})
 					}
@@ -70,10 +86,10 @@ class ResourceCompiler {
 					}
 					break
 				case 'animation':
-					const animation: ResourceAnimation = {
+					const animation: rcf.ResourceAnimation = {
 						frames: [],
 						name: fullname,
-						type: ResourceImageType.ANIMATION,
+						type: rcf.ResourceImageType.ANIMATION,
 					}
 					for (const frame of layer.children!) {
 						if (!frame.canvas) {
@@ -126,40 +142,59 @@ class ResourceCompiler {
 	}
 
 	public save(output: string) {
-		const o: ResourceFile = {
+		const o: rcf.ResourceFile = {
 			groups: this.groups,
 			images: Array.from(this.images.values())
 		}
 		fs.writeFileSync(output, JSON.stringify(o))
 	}
 
-	private registerProxy(canvas: HTMLCanvasElement): string {
-		const hash = `@${canvas.width},${canvas.height}`
-		this.images.set(hash, {
-			hash,
-			width: canvas.width,
-			height: canvas.height,
-		})
-		return hash
-	}
-
 	private registerImage(canvas: HTMLCanvasElement, hitmap: boolean): string {
 		const image = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height)
 		const hash = murmurHash64x64(Buffer.from(image.data.buffer))
 		if (!this.images.has(hash)) {
-			const resource: ResourceImage = {
+			const resource: rcf.ResourceImage = {
 				hash,
 				width: image.width,
 				height: image.height,
 			}
 			if (hitmap) {
-				const hitmapArray = ResourceCompiler.buildHitmap(image.data, image.width, image.height, HITMAP_COMPRESSION)
-				resource.hitmap = Buffer.from(hitmapArray.buffer).toString('base64').match(/[^=]*/)![0]
+				const hitmapArray = ResourceCompiler.buildHitmap(image.data, image.width, image.height, CONSTANTS.HITMAP_COMPRESSION)
+				resource.hitmap = Buffer.from(hitmapArray.buffer).toString('base64').replace(/=/g, '')
 			}
 			this.images.set(hash, resource)
 			fs.writeFileSync(path.join(this.imageDir, hash + '.png'), (canvas as any as Canvas).toBuffer())
 		}
 		return hash
+	}
+
+	private static buildWalkmap(data: Uint8ClampedArray, xsize: number, ysize: number, scale: number) {
+		const xNew = Math.floor(xsize / scale)
+		const yNew = Math.floor(ysize / scale)
+		const scaled = new Uint32Array(xNew * yNew)
+		for (let y = 0; y < (yNew * scale); y++) {
+			for (let x = 0; x < (xNew * scale); x++) {
+				if (data[(((y * xsize) + x) * 4) + 3]) {
+					scaled[(Math.floor(y / scale) * xNew) + Math.floor(x / scale)] += 1
+				}
+			}
+		}
+		const output = new Uint8Array(Math.ceil((xNew * yNew) / 8))
+		let acc = 0
+		for (let i = 0; i < (xNew * yNew); i++) {
+			acc >>= 1
+			if (scaled[i] >= ((scale * scale) / 2)) {
+				acc |= 0x80
+			}
+			if ((i & 7) == 7) {
+				output[i >> 3] = acc
+				acc = 0
+			}
+		}
+		if (acc) {
+			output[output.length - 1] = acc
+		}
+		return output
 	}
 
 	private static buildHitmap(data: Uint8Array | Uint8ClampedArray, xsize: number, ysize: number, compression: number) {
