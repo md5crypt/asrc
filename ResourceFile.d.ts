@@ -59,5 +59,6 @@ export const enum ResourceImageType {
 	POINT,
 	TEXT,
 	ANIMATION,
-	WALKMAP
+	WALKMAP,
+	QUAD
 }

@@ -35,6 +35,15 @@ class ResourceCompiler {
 				case 'origin':
 					originStack.push({top: layer.top!, left: layer.left!})
 					break
+				case 'quad': {
+					group.sprites.push({
+						...base,
+						type: rcf.ResourceImageType.QUAD,
+						width: layer.canvas.width,
+						height: layer.canvas.height,
+					})
+					break
+				}
 				case 'walkmap': {
 					const image = layer.canvas.getContext('2d')!.getImageData(0, 0, layer.canvas.width, layer.canvas.height)
 					const walkmap = ResourceCompiler.buildWalkmap(image.data, image.width, image.height, CONSTANTS.WALKMAP_SCALE)
